@@ -7,7 +7,7 @@ final class ClipStorage {
 
     // MARK: - Singleton
 
-    static let shared = ClipStorage()
+    nonisolated(unsafe) static let shared = ClipStorage()
 
     // MARK: - Constants
 

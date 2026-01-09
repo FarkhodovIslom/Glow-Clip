@@ -2,6 +2,7 @@ import AppKit
 import os.log
 
 @main
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Properties

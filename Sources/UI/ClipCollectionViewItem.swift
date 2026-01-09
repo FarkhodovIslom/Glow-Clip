@@ -1,6 +1,7 @@
 import AppKit
 
 /// Custom collection view item for displaying clipboard entries
+@MainActor
 final class ClipCollectionViewItem: NSCollectionViewItem {
 
     // MARK: - Constants

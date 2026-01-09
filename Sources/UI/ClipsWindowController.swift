@@ -2,6 +2,7 @@ import AppKit
 import os.log
 
 /// Window controller for displaying clipboard history
+@MainActor
 final class ClipsWindowController: NSWindowController {
 
     // MARK: - Constants
