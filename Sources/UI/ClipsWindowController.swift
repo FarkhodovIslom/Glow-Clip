@@ -19,6 +19,7 @@ final class ClipsWindowController: NSWindowController {
     // MARK: - Properties
 
     private var items: [ClipItem] = []
+    private var itemIds: Set<UUID> = [] // For efficient diffing
     private var collectionView: NSCollectionView!
     private var scrollView: NSScrollView!
     private var emptyStateLabel: NSTextField!
@@ -146,9 +147,87 @@ final class ClipsWindowController: NSWindowController {
     // MARK: - Data
 
     func reloadData() {
-        items = ClipStorage.shared.allItems()
-        collectionView.reloadData()
+        let newItems = ClipStorage.shared.allItems()
+        let newItemIds = Set(newItems.map { $0.id })
+
+        // Check if we need a full reload or can do differential update
+        if items.isEmpty || itemIds.isEmpty || newItems.count != items.count {
+            // Full reload needed for first load or count change
+            items = newItems
+            itemIds = newItemIds
+            collectionView.reloadData()
+        } else {
+            // Perform differential update
+            updateItemsDifferentially(newItems: newItems, newItemIds: newItemIds)
+        }
+
         updateEmptyState()
+    }
+
+    /// Performs efficient differential update instead of full reload
+    private func updateItemsDifferentially(newItems: [ClipItem], newItemIds: Set<UUID>) {
+        let oldItemIds = itemIds
+        let oldItems = items
+
+        // Find items to remove (in old but not in new)
+        let removedIds = oldItemIds.subtracting(newItemIds)
+        let removedIndices = oldItems.enumerated()
+            .filter { removedIds.contains($0.element.id) }
+            .map { IndexPath(item: $0.offset, section: 0) }
+            .sorted { $0.item > $1.item } // Remove from end to beginning
+
+        // Find items to insert (in new but not in old)
+        let insertedIds = newItemIds.subtracting(oldItemIds)
+        let insertedIndices = newItems.enumerated()
+            .filter { insertedIds.contains($0.element.id) }
+            .map { IndexPath(item: $0.offset, section: 0) }
+
+        // Find items that moved positions
+        let commonIds = oldItemIds.intersection(newItemIds)
+        var updatedIndices: [(old: IndexPath, new: IndexPath)] = []
+
+        for id in commonIds {
+            if let oldIndex = oldItems.firstIndex(where: { $0.id == id }),
+               let newIndex = newItems.firstIndex(where: { $0.id == id }),
+               oldIndex != newIndex {
+                updatedIndices.append(
+                    (old: IndexPath(item: oldIndex, section: 0),
+                     new: IndexPath(item: newIndex, section: 0))
+                )
+            }
+        }
+
+        // Perform batch updates
+        collectionView.animator().performBatchUpdates {
+            // Remove old items
+            for indexPath in removedIndices {
+                self.collectionView.animator().deleteItems(at: [indexPath])
+            }
+
+            // Insert new items
+            for indexPath in insertedIndices {
+                self.collectionView.animator().insertItems(at: [indexPath])
+            }
+
+            // Move items that changed position
+            for (oldIndexPath, newIndexPath) in updatedIndices {
+                self.collectionView.animator().moveItem(at: oldIndexPath, to: newIndexPath)
+            }
+        }
+
+        // Update data
+        items = newItems
+        itemIds = newItemIds
+
+        // Reload items that changed content (pin state, etc.)
+        for id in commonIds {
+            if let oldItem = oldItems.first(where: { $0.id == id }),
+               let newItem = newItems.first(where: { $0.id == id }),
+               oldItem != newItem,
+               let index = newItems.firstIndex(where: { $0.id == id }) {
+                collectionView.reloadItems(at: [IndexPath(item: index, section: 0)])
+            }
+        }
     }
 
     private func updateEmptyState() {

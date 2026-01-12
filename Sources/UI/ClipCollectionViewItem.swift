@@ -224,15 +224,31 @@ final class ClipCollectionViewItem: NSCollectionViewItem {
         previewLabel.isHidden = true
         previewImageView.isHidden = false
 
-        // Load image asynchronously
+        // Use cached thumbnail for memory efficiency
+        if let thumbnail = ImageCache.shared.image(for: item.id, type: .thumbnail(maxSize: CGSize(width: 200, height: 200))) {
+            previewImageView.image = NSImage(cgImage: thumbnail, size: NSSize(width: thumbnail.width, height: thumbnail.height))
+            return
+        }
+
+        // Fallback: generate and cache thumbnail if not available
         DispatchQueue.global(qos: .userInteractive).async { [weak self] in
             guard let content = ClipStorage.shared.content(for: item) as? NSImage else {
                 return
             }
 
+            // Generate thumbnail and store in cache
+            _ = ImageCache.shared.generateThumbnail(from: content, for: item.id)
+
             DispatchQueue.main.async {
                 guard self?.currentItem?.id == item.id else { return }
-                self?.previewImageView.image = content
+
+                // Retrieve from cache
+                if let cachedThumbnail = ImageCache.shared.image(for: item.id, type: .thumbnail(maxSize: CGSize(width: 200, height: 200))) {
+                    self?.previewImageView.image = NSImage(cgImage: cachedThumbnail, size: NSSize(width: cachedThumbnail.width, height: cachedThumbnail.height))
+                } else {
+                    // Final fallback to resized image
+                    self?.previewImageView.image = content
+                }
             }
         }
     }

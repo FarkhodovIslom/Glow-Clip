@@ -130,6 +130,11 @@ final class ClipStorage {
             return nil
         }
 
+        // Generate and cache thumbnail for memory-efficient display
+        // Use a copy of the image for thumbnail generation
+        let imageForThumbnail = NSImage(data: pngData) ?? image
+        ImageCache.shared.generateThumbnail(from: imageForThumbnail, for: id)
+
         let item = ClipItem(
             id: id,
             type: .image,
