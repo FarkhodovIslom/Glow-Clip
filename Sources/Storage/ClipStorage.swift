@@ -368,6 +368,7 @@ final class ClipStorage: @unchecked Sendable {
     }
     
     /// Shows an error alert to the user
+    @MainActor
     private func showError(message: String) {
         let alert = NSAlert()
         alert.messageText = "Clipboard Error"
