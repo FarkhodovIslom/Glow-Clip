@@ -125,6 +125,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApplication.shared.mainMenu = mainMenu
         NSApplication.shared.windowsMenu = windowMenu
     }
+    
+    private func setupGlobalHotkey() {
+        // Register global hotkey: Cmd+Shift+V
+        globalHotkeyMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            // Cmd+Shift+V (keyCode 9 = 'V')
+            if event.modifierFlags.contains([.command, .shift]),
+               event.keyCode == 9 {
+                DispatchQueue.main.async {
+                    self?.showClipsWindow(nil)
+                }
+            }
+        }
+        
+        logger.info(\"Global hotkey registered: Cmd+Shift+V\")
+    }
 
     // MARK: - Actions
 
