@@ -15,6 +15,7 @@ final class ClipStorage: @unchecked Sendable {
     private enum Constants {
         static let maxItems = 30
         static let maxDiskUsageBytes: Int64 = 500_000_000 // 500MB quota
+        static let maxImageDimension: CGFloat = 4096 // Maximum width or height
         static let clipsFileName = "clips.json"
     }
 
@@ -117,7 +118,10 @@ final class ClipStorage: @unchecked Sendable {
     /// Saves an image clip
     @discardableResult
     func save(image: NSImage) -> ClipItem? {
-        guard let tiffData = image.tiffRepresentation,
+        // Resize image if it exceeds maximum dimensions
+        let resizedImage = enforceMaxDimensions(image)
+        
+        guard let tiffData = resizedImage.tiffRepresentation,
               let bitmap = NSBitmapImageRep(data: tiffData),
               let pngData = bitmap.representation(using: .png, properties: [:]) else {
             logger.error("Failed to convert image to PNG")
@@ -360,11 +364,39 @@ final class ClipStorage: @unchecked Sendable {
         
         // Track disk usage reduction
         if let attributes = try? fileManager.attributesOfItem(atPath: filePath.path),
-           let fileSize = attributes[.size] as? Int64 {
+            let fileSize = attributes[.size] as? Int64 {
             currentDiskUsage -= fileSize
         }
         
         try? fileManager.removeItem(at: filePath)
+    }
+    
+    /// Enforces maximum image dimensions by resizing if necessary
+    private func enforceMaxDimensions(_ image: NSImage) -> NSImage {
+        let size = image.size
+        let maxDim = Constants.maxImageDimension
+        
+        // Check if image exceeds maximum dimensions
+        guard size.width > maxDim || size.height > maxDim else {
+            return image // Image is within limits
+        }
+        
+        // Calculate new size maintaining aspect ratio
+        let ratio = min(maxDim / size.width, maxDim / size.height)
+        let newSize = CGSize(width: size.width * ratio, height: size.height * ratio)
+        
+        logger.info("Resizing image from \(size.width)x\(size.height) to \(newSize.width)x\(newSize.height)")
+        
+        // Create resized image
+        let newImage = NSImage(size: newSize)
+        newImage.lockFocus()
+        image.draw(in: CGRect(origin: .zero, size: newSize),
+                   from: CGRect(origin: .zero, size: size),
+                   operation: .sourceOver,
+                   fraction: 1.0)
+        newImage.unlockFocus()
+        
+        return newImage
     }
     
     /// Shows an error alert to the user
