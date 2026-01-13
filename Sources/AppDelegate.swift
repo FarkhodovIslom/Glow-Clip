@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var clipboardWatcher: ClipboardWatcher!
     private var clipsWindowController: ClipsWindowController?
     private var statusItem: NSStatusItem?
+    private var globalHotkeyMonitor: Any?
 
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "GlowClip", category: "AppDelegate")
 
@@ -21,6 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupStatusBarItem()
         setupClipboardWatcher()
         setupMainMenu()
+        setupGlobalHotkey()
 
         // Show window on first launch
         showClipsWindow(nil)
@@ -28,6 +30,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         clipboardWatcher.stop()
+        
+        if let monitor = globalHotkeyMonitor {
+            NSEvent.removeMonitor(monitor)
+        }
+        
         logger.info("Glow Clip shutting down")
     }
 
