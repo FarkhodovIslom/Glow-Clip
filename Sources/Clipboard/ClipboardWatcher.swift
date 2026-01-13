@@ -108,6 +108,7 @@ final class ClipboardWatcher {
         processPasteboardContent()
     }
 
+    @MainActor
     private func processPasteboardContent() {
         // Priority order: files > images > text
         // This ensures we capture the most specific content type
@@ -123,6 +124,7 @@ final class ClipboardWatcher {
         processText()
     }
 
+    @MainActor
     private func processFiles() -> Bool {
         guard let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [
             .urlReadingFileURLsOnly: true
@@ -146,6 +148,7 @@ final class ClipboardWatcher {
         return true
     }
 
+    @MainActor
     private func processImage() -> Bool {
         // Check for image types in pasteboard
         let imageTypes: [NSPasteboard.PasteboardType] = [
@@ -173,6 +176,7 @@ final class ClipboardWatcher {
         return saveImage(image)
     }
 
+    @MainActor
     private func saveImage(_ image: NSImage) -> Bool {
         // Validate image has actual content
         guard image.isValid, image.size.width > 0, image.size.height > 0 else {
@@ -190,6 +194,7 @@ final class ClipboardWatcher {
         return false
     }
 
+    @MainActor
     private func processText() {
         guard let text = pasteboard.string(forType: .string) else {
             return
@@ -214,6 +219,7 @@ final class ClipboardWatcher {
 extension ClipboardWatcher {
 
     /// Writes a clip item back to the pasteboard
+    @MainActor
     func writeToClipboard(_ item: ClipItem) {
         willWriteToPasteboard()
 
