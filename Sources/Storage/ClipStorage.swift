@@ -3,8 +3,8 @@ import AppKit
 import os.log
 
 /// Thread-safe singleton for managing clipboard history persistence
-@MainActor
-final class ClipStorage {
+/// Uses a serial dispatch queue for thread safety while remaining compatible with all call sites
+final class ClipStorage: @unchecked Sendable {
 
     // MARK: - Singleton
 
