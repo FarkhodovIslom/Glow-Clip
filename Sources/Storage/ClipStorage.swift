@@ -3,18 +3,19 @@ import AppKit
 import os.log
 
 /// Thread-safe singleton for managing clipboard history persistence
+@MainActor
 final class ClipStorage {
 
     // MARK: - Singleton
 
-    nonisolated(unsafe) static let shared = ClipStorage()
+    static let shared = ClipStorage()
 
     // MARK: - Constants
 
     private enum Constants {
         static let maxItems = 30
+        static let maxDiskUsageBytes: Int64 = 500_000_000 // 500MB quota
         static let clipsFileName = "clips.json"
-        static let containerIdentifier = "com.hansoftware.sonarclip"
     }
 
     // MARK: - Properties
@@ -25,23 +26,26 @@ final class ClipStorage {
 
     private var items: [ClipItem] = []
     private var isDirty = false
+    private var currentDiskUsage: Int64 = 0
 
     /// Base directory for all clip data
     private lazy var clipsDirectory: URL = {
-        let appSupport = fileManager.urls(for: .libraryDirectory, in: .userDomainMask).first!
-        let containerPath = appSupport
-            .appendingPathComponent("Containers")
-            .appendingPathComponent(Constants.containerIdentifier)
-            .appendingPathComponent("Data")
+        guard let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+            fatalError("Unable to access Application Support directory")
+        }
+
+        let clipsPath = appSupport
+            .appendingPathComponent("GlowClip")
             .appendingPathComponent("Clips")
 
         do {
-            try fileManager.createDirectory(at: containerPath, withIntermediateDirectories: true)
+            try fileManager.createDirectory(at: clipsPath, withIntermediateDirectories: true)
+            logger.info("Created clips directory at: \(clipsPath.path)")
         } catch {
             logger.error("Failed to create clips directory: \(error.localizedDescription)")
         }
 
-        return containerPath
+        return clipsPath
     }()
 
     /// Path to the JSON database file
@@ -53,25 +57,24 @@ final class ClipStorage {
 
     private init() {
         loadFromDisk()
+        calculateDiskUsage()
     }
 
     // MARK: - Public Interface
 
     /// Returns all items, sorted by date (newest first), with pinned items at the top
     func allItems() -> [ClipItem] {
-        queue.sync {
-            items.sorted { lhs, rhs in
-                if lhs.pinned != rhs.pinned {
-                    return lhs.pinned
-                }
-                return lhs.date > rhs.date
+        items.sorted { lhs, rhs in
+            if lhs.pinned != rhs.pinned {
+                return lhs.pinned
             }
+            return lhs.date > rhs.date
         }
     }
 
     /// Returns item count
     var count: Int {
-        queue.sync { items.count }
+        items.count
     }
 
     /// Saves a text clip
@@ -92,8 +95,10 @@ final class ClipStorage {
 
         do {
             try text.write(to: filePath, atomically: true, encoding: .utf8)
+            trackFileSize(filePath)
         } catch {
             logger.error("Failed to save text clip: \(error.localizedDescription)")
+            showError(message: "Failed to save clipboard text")
             return nil
         }
 
@@ -125,15 +130,17 @@ final class ClipStorage {
 
         do {
             try pngData.write(to: filePath, options: .atomic)
+            trackFileSize(filePath)
         } catch {
             logger.error("Failed to save image clip: \(error.localizedDescription)")
+            showError(message: "Failed to save clipboard image")
             return nil
         }
 
         // Generate and cache thumbnail for memory-efficient display
         // Use a copy of the image for thumbnail generation
         let imageForThumbnail = NSImage(data: pngData) ?? image
-        ImageCache.shared.generateThumbnail(from: imageForThumbnail, for: id)
+        _ = ImageCache.shared.generateThumbnail(from: imageForThumbnail, for: id)
 
         let item = ClipItem(
             id: id,
@@ -159,9 +166,18 @@ final class ClipStorage {
 
         do {
             let data = try JSONEncoder().encode(paths)
+            
+            // Check quota before saving
+            if !canAddFile(withSize: Int64(data.count)) {
+                let targetSize = Constants.maxDiskUsageBytes - Int64(data.count)
+                freeUpDiskSpace(targetSize: max(0, targetSize))
+            }
+            
             try data.write(to: filePath, options: .atomic)
+            trackFileSize(filePath)
         } catch {
             logger.error("Failed to save file clip: \(error.localizedDescription)")
+            showError(message: "Failed to save file reference")
             return nil
         }
 
@@ -210,91 +226,67 @@ final class ClipStorage {
 
     /// Toggles the pinned state of an item
     func togglePin(for itemId: UUID) {
-        queue.async { [weak self] in
-            guard let self = self,
-                  let index = self.items.firstIndex(where: { $0.id == itemId }) else {
-                return
-            }
-
-            self.items[index].pinned.toggle()
-            self.isDirty = true
-            self.saveToDisk()
-
-            DispatchQueue.main.async {
-                NotificationCenter.default.post(name: .clipStorageDidUpdate, object: nil)
-            }
+        guard let index = items.firstIndex(where: { $0.id == itemId }) else {
+            return
         }
+
+        items[index].pinned.toggle()
+        isDirty = true
+        saveToDisk()
+
+        NotificationCenter.default.post(name: .clipStorageDidUpdate, object: nil)
     }
 
     /// Deletes a specific item
     func delete(itemId: UUID) {
-        queue.async { [weak self] in
-            guard let self = self,
-                  let index = self.items.firstIndex(where: { $0.id == itemId }) else {
-                return
-            }
-
-            let item = self.items.remove(at: index)
-            self.deleteFile(for: item)
-            self.isDirty = true
-            self.saveToDisk()
-
-            DispatchQueue.main.async {
-                NotificationCenter.default.post(name: .clipStorageDidUpdate, object: nil)
-            }
+        guard let index = items.firstIndex(where: { $0.id == itemId }) else {
+            return
         }
+
+        let item = items.remove(at: index)
+        deleteFile(for: item)
+        isDirty = true
+        saveToDisk()
+
+        NotificationCenter.default.post(name: .clipStorageDidUpdate, object: nil)
     }
 
     /// Clears all non-pinned items
     func clearHistory() {
-        queue.async { [weak self] in
-            guard let self = self else { return }
+        let toDelete = items.filter { !$0.pinned }
+        toDelete.forEach { deleteFile(for: $0) }
 
-            let toDelete = self.items.filter { !$0.pinned }
-            toDelete.forEach { self.deleteFile(for: $0) }
+        items.removeAll { !$0.pinned }
+        isDirty = true
+        saveToDisk()
 
-            self.items.removeAll { !$0.pinned }
-            self.isDirty = true
-            self.saveToDisk()
-
-            DispatchQueue.main.async {
-                NotificationCenter.default.post(name: .clipStorageDidUpdate, object: nil)
-            }
-        }
+        NotificationCenter.default.post(name: .clipStorageDidUpdate, object: nil)
     }
 
     // MARK: - Private Methods
 
     private func addItem(_ item: ClipItem) {
-        queue.async { [weak self] in
-            guard let self = self else { return }
+        items.insert(item, at: 0)
+        enforceLimit()
+        isDirty = true
+        saveToDisk()
 
-            self.items.insert(item, at: 0)
-            self.enforceLimit()
-            self.isDirty = true
-            self.saveToDisk()
-
-            DispatchQueue.main.async {
-                NotificationCenter.default.post(name: .clipStorageDidUpdate, object: nil)
-            }
-        }
+        NotificationCenter.default.post(name: .clipStorageDidUpdate, object: nil)
     }
 
     private func findDuplicateText(_ text: String) -> ClipItem? {
-        queue.sync {
-            // Check if the most recent text item has the same content
-            guard let recentText = items.first(where: { $0.type == .text && !$0.pinned }) else {
-                return nil
-            }
-
-            let filePath = clipsDirectory.appendingPathComponent(recentText.path)
-            guard let existingText = try? String(contentsOf: filePath, encoding: .utf8),
-                  existingText == text else {
-                return nil
-            }
-
-            return recentText
+        // Check if the most recent text item has the same content
+        guard let recentText = items.first(where: { $0.type == .text && !$0.pinned }) else {
+            return nil
         }
+
+        let filePath = clipsDirectory.appendingPathComponent(recentText.path)
+        guard let existingText = try? String(contentsOf: filePath, encoding: .utf8),
+              existingText == text else {
+            return nil
+        }
+
+        return recentText
     }
 
     private func enforceLimit() {
@@ -313,30 +305,92 @@ final class ClipStorage {
             }
         }
     }
-
+    
+    /// Calculates current disk usage by summing all clip file sizes
+    private func calculateDiskUsage() {
+        var totalSize: Int64 = 0
+        
+        for item in items {
+            let filePath = clipsDirectory.appendingPathComponent(item.path)
+            if let attributes = try? fileManager.attributesOfItem(atPath: filePath.path),
+               let fileSize = attributes[.size] as? Int64 {
+                totalSize += fileSize
+            }
+        }
+        
+        currentDiskUsage = totalSize
+        logger.debug("Current disk usage: \(totalSize / 1_000_000)MB")
+    }
+    
+    /// Checks if adding a new file would exceed disk quota
+    private func canAddFile(withSize size: Int64) -> Bool {
+        return (currentDiskUsage + size) <= Constants.maxDiskUsageBytes
+    }
+    
+    /// Frees up disk space by removing oldest non-pinned items until target size is met
+    private func freeUpDiskSpace(targetSize: Int64) {
+        let unpinnedItems = items.filter { !$0.pinned }.sorted { $0.date < $1.date }
+        
+        for item in unpinnedItems {
+            guard currentDiskUsage > targetSize else { break }
+            
+            let filePath = clipsDirectory.appendingPathComponent(item.path)
+            if let attributes = try? fileManager.attributesOfItem(atPath: filePath.path),
+               let fileSize = attributes[.size] as? Int64 {
+                deleteFile(for: item)
+                items.removeAll { $0.id == item.id }
+                currentDiskUsage -= fileSize
+                logger.info("Freed \(fileSize / 1_000_000)MB by removing old clip")
+            }
+        }
+        
+        isDirty = true
+    }
+    
+    /// Updates disk usage after adding a file
+    private func trackFileSize(_ fileURL: URL) {
+        if let attributes = try? fileManager.attributesOfItem(atPath: fileURL.path),
+           let fileSize = attributes[.size] as? Int64 {
+            currentDiskUsage += fileSize
+        }
+    }
+    
     private func deleteFile(for item: ClipItem) {
         let filePath = clipsDirectory.appendingPathComponent(item.path)
+        
+        // Track disk usage reduction
+        if let attributes = try? fileManager.attributesOfItem(atPath: filePath.path),
+           let fileSize = attributes[.size] as? Int64 {
+            currentDiskUsage -= fileSize
+        }
+        
         try? fileManager.removeItem(at: filePath)
+    }
+    
+    /// Shows an error alert to the user
+    private func showError(message: String) {
+        let alert = NSAlert()
+        alert.messageText = "Clipboard Error"
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     private func loadFromDisk() {
-        queue.async { [weak self] in
-            guard let self = self else { return }
+        guard fileManager.fileExists(atPath: databasePath.path) else {
+            logger.info("No existing database found, starting fresh")
+            return
+        }
 
-            guard self.fileManager.fileExists(atPath: self.databasePath.path) else {
-                self.logger.info("No existing database found, starting fresh")
-                return
-            }
-
-            do {
-                let data = try Data(contentsOf: self.databasePath)
-                let decoder = JSONDecoder()
-                decoder.dateDecodingStrategy = .iso8601
-                self.items = try decoder.decode([ClipItem].self, from: data)
-                self.logger.info("Loaded \(self.items.count) items from disk")
-            } catch {
-                self.logger.error("Failed to load database: \(error.localizedDescription)")
-            }
+        do {
+            let data = try Data(contentsOf: databasePath)
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            items = try decoder.decode([ClipItem].self, from: data)
+            logger.info("Loaded \(self.items.count) items from disk")
+        } catch {
+            logger.error("Failed to load database: \(error.localizedDescription)")
         }
     }
 
