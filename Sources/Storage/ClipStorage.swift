@@ -98,7 +98,7 @@ final class ClipStorage: @unchecked Sendable {
             trackFileSize(filePath)
         } catch {
             logger.error("Failed to save text clip: \(error.localizedDescription)")
-            showError(message: "Failed to save clipboard text")
+            Task { @MainActor in showError(message: "Failed to save clipboard text") }
             return nil
         }
 
@@ -133,7 +133,7 @@ final class ClipStorage: @unchecked Sendable {
             trackFileSize(filePath)
         } catch {
             logger.error("Failed to save image clip: \(error.localizedDescription)")
-            showError(message: "Failed to save clipboard image")
+            Task { @MainActor in showError(message: "Failed to save clipboard image") }
             return nil
         }
 
@@ -177,7 +177,7 @@ final class ClipStorage: @unchecked Sendable {
             trackFileSize(filePath)
         } catch {
             logger.error("Failed to save file clip: \(error.localizedDescription)")
-            showError(message: "Failed to save file reference")
+            Task { @MainActor in showError(message: "Failed to save file reference") }
             return nil
         }
 
