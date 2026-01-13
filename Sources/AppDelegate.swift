@@ -138,7 +138,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         
-        logger.info(\"Global hotkey registered: Cmd+Shift+V\")
+        logger.info("Global hotkey registered: Cmd+Shift+V")
     }
 
     // MARK: - Actions
